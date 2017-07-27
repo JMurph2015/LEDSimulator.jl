@@ -10,7 +10,7 @@ function fillLEDs(ctx, h, w, ledData)
     #@show size(ledData)
     for i in 1:size(ledData, 3)
         for j in 1:size(ledData, 2)
-            rectangle(ctx, (j-1)*(rect_width), (i-1)*(rect_height), rect_width, rect_height)
+            rectangle(ctx, (j-1)*(rect_width), (i-1)*(rect_height), rect_width-3, rect_height-5)
             set_source_rgb(ctx, (ledData[:,j,i]/255)...)
             fill(ctx)
         end
@@ -91,18 +91,15 @@ function main(n, ledprow, numrow, port, setup)
     
     exited = false
     NUM_LEDS % NUM_ROWS == 0 || error("Number of leds must be evenly divisible by number of rows")
-    ledData = zeros(UInt8, 3, NUM_ROWS, LED_PER_ROW)
     c = @Canvas()
     win = Window(c, "My Window", 600, 400, true, true)
+    recvData = zeros(UInt8, BYTES_PER_LED*NUM_LEDS)
     @async begin
         show(c)
         while !exited
             recvData = recv(udpSock)
             if typeof(recvData) == Vector{UInt8}
-                #print(size(recvData))
-                ledData = reshape(recvData[1:BYTES_PER_LED*NUM_LEDS], BYTES_PER_LED, LED_PER_ROW, NUM_ROWS)
-                #println(typeof(ledData))
-                redraw(c, ledData)
+                redraw(c, reshape(recvData[1:BYTES_PER_LED*NUM_LEDS], BYTES_PER_LED, LED_PER_ROW, NUM_ROWS))
             end
         end
     end
