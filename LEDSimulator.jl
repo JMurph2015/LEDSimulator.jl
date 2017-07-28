@@ -2,35 +2,116 @@ __precompile__(true)
 module LEDSimulator
 export main
 
-using Gtk.ShortNames, Graphics, JSON
+using JSON, ModernGL, GLAbstraction, GeometryTypes
+import GLFW 
 
-function fillLEDs(ctx, h, w, ledData)
-    rect_width = floor(Int, w/size(ledData,2))
-    rect_height = floor(Int, h/size(ledData,3))
-    #@show size(ledData)
-    for i in 1:size(ledData, 3)
-        for j in 1:size(ledData, 2)
-            rectangle(ctx, (j-1)*(rect_width), (i-1)*(rect_height), rect_width-3, rect_height-5)
-            set_source_rgb(ctx, (ledData[:,j,i]/255)...)
-            fill(ctx)
+function main(n, ledprow, numrow, port, setup)
+    const name = n
+    const LED_PER_ROW = ledprow
+    const NUM_ROWS = numrow
+    const NUM_LEDS = LED_PER_ROW*NUM_ROWS
+    const BYTES_PER_LED = 3
+    const PORT = port
+    const SETUP_PORT = setup
+    udpSock = UDPSocket()
+    bind(udpSock,ip"127.0.0.1",PORT)
+    setup_server_connection(name, LED_PER_ROW, NUM_ROWS, udpSock, PORT, SETUP_PORT)
+
+    window = GLFW.CreateWindow(640,480, "LEDSimulator.jl")
+    GLFW.MakeContextCurrent(window)
+
+    vao = Ref(GLuint(0))
+    glGenVertexArrays(1, vao)
+    glBindVertexArray(vao[])
+
+    const vert_shader = vert"""
+        {{GLSL_VERSION}}
+        in vec2 position;
+        in vec3 color;
+
+        out vec3 Color;
+
+        void main()
+        {
+            Color = color;
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    """
+    const frag_shader = frag"""
+        {{GLSL_VERSION}}
+        in vec3 Color;
+        out vec4 color;
+
+        void main()
+        {    
+            color = vec4(Color, 1.0);
+        }
+    """
+    vertex_positions, elements = getVertices(LED_PER_ROW, NUM_ROWS)
+
+    vertex_colors = getVertexColors(NUM_LEDS)
+    bufferdict = Dict(
+        :position=>GLBuffer(vertex_positions),
+        :color=>GLBuffer(vertex_colors),
+        :indexes=>indexbuffer(elements)
+    )
+    ro = std_renderobject(bufferdict, LazyShader(vert_shader, frag_shader))
+
+    
+    exited = false
+    NUM_LEDS % NUM_ROWS == 0 || error("Number of leds must be evenly divisible by number of rows")
+    recvData = zeros(UInt8, BYTES_PER_LED*NUM_LEDS)
+    @async begin
+        show(c)
+        while !exited
+            recvData = recv(udpSock)
+            if typeof(recvData) == Vector{UInt8}
+                update!(bufferdict, reshape(recvData[1:BYTES_PER_LED*NUM_LEDS], BYTES_PER_LED, LED_PER_ROW, NUM_ROWS))
+            end
         end
     end
+    glClearColor(0,0,0,0)
+    while !GLFW.WindowShouldClose(window)
+        glClear(GL_COLOR_BUFFER_BIT)
+        GLAbstraction.render(ro)
+        GLFW.SwapBuffers(window)
+        GLFW.PollEvents()
+        if GLFW.GetKey(window, GLFW.KEY_ESCAPE) == GLFW.PRESS
+            GLFW.SetWindowShouldClose(window, true)
+        end
+    end
+    GLFW.DestroyWindow(window)
 end
-function clear(c::Canvas)
-    ctx = getgc(c)
-    h = height(c)
-    w = width(c)
-    rectangle(ctx, 0,0,w,h)
-    set_source_rgb(ctx,0,0,0)
-    fill(ctx)
+
+function getVertices(leds_per_row, num_rows)
+    slotwidth = convert(Float32, 2/leds_per_row)
+    slotheight = convert(Float32, 2/num_rows)
+    # Adjust the computation for one indexing.  Good ole one-indexing.
+    rect_template = [
+        Float32[ 0.0f0,             0.90f0*slotheight],
+        Float32[ 0.90f0*slotwidth,  0.90f0*slotheight],
+        Float32[ 0.90f0*slotwidth,  0.0f0],
+        Float32[ 0.0f0,             0.0f0],
+    ]
+    get_slot(x,y) = Float32[((x-1)*slotwidth)-1, ((y-1)*slotheight)-1]
+
+    stuff = [rect_template[i].+get_slot(j,k) for i in 1:4, k in 1:num_rows, j in 1:leds_per_row]
+    out = [Point{2,Float32}(stuff[i]...) for i in eachindex(stuff)]
+    elems = vcat(reshape([[(i-1,i,i+1), (i+1,i+2,i-1)] for i in 1:4:length(out)], :, 1)...)
+    elements = [Face{3, UInt32}(elems[i]...) for i in 1:length(elems)]
+    return out, elements
 end
-function redraw(c, ledData)
-    @guarded draw(c) do widget
-        ctx = getgc(c)
-        h = height(c)
-        w = width(c)
-        clear(c)
-        fillLEDs(ctx, h, w, ledData)
+
+function getVertexColors(numLED)
+    return Vec3f0[(0.0f0,0.4f0,1.0f0) for i in 1:4*numLED]
+end
+
+function update!(bufferdict, ledData)
+    for i in 1:size(ledData, 3) # each row
+        for j in 1:size(ledData, 2) # each column in the row
+            idx = (j-1)*4+(i-1)*size(leddata,2)
+            bufferdict[:color][idx:idx+3] = Vec3f0(leddata[:,j,i]/255.0f0...)
+        end
     end
 end
 
@@ -72,44 +153,6 @@ function setup_server_connection(name, led_per_row, num_rows, main_udpsock, main
             send(main_udpsock, tmp[1], setup_port, json(out_dict))
             break
         end
-    end
-end
-
-function main(n, ledprow, numrow, port, setup)
-    const name = n
-    const LED_PER_ROW = ledprow
-    const NUM_ROWS = numrow
-    const NUM_LEDS = LED_PER_ROW*NUM_ROWS
-    const BYTES_PER_LED = 3
-    const PORT = port
-    const SETUP_PORT = setup
-
-    udpSock = UDPSocket()
-    bind(udpSock,ip"127.0.0.1",PORT)
-
-    setup_server_connection(name, LED_PER_ROW, NUM_ROWS, udpSock, PORT, SETUP_PORT)
-    
-    exited = false
-    NUM_LEDS % NUM_ROWS == 0 || error("Number of leds must be evenly divisible by number of rows")
-    c = @Canvas()
-    win = Window(c, "My Window", 600, 400, true, true)
-    recvData = zeros(UInt8, BYTES_PER_LED*NUM_LEDS)
-    @async begin
-        show(c)
-        while !exited
-            recvData = recv(udpSock)
-            if typeof(recvData) == Vector{UInt8}
-                redraw(c, reshape(recvData[1:BYTES_PER_LED*NUM_LEDS], BYTES_PER_LED, LED_PER_ROW, NUM_ROWS))
-            end
-        end
-    end
-    if !isinteractive()
-        cx = Condition()
-        signal_connect(win, :destroy) do widget
-            notify(cx)
-            exited = true
-        end
-        wait(cx)
     end
 end
 
