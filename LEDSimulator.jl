@@ -13,6 +13,7 @@ function main(n, ledprow, numrow, port, setup)
     const BYTES_PER_LED = 3
     const PORT = port
     const SETUP_PORT = setup
+
     udpSock = UDPSocket()
     bind(udpSock,ip"127.0.0.1",PORT)
     setup_server_connection(name, LED_PER_ROW, NUM_ROWS, udpSock, PORT, SETUP_PORT)
@@ -56,21 +57,18 @@ function main(n, ledprow, numrow, port, setup)
         :indexes=>indexbuffer(elements)
     )
     ro = std_renderobject(bufferdict, LazyShader(vert_shader, frag_shader))
-
-    
     exited = false
     NUM_LEDS % NUM_ROWS == 0 || error("Number of leds must be evenly divisible by number of rows")
     recvData = zeros(UInt8, BYTES_PER_LED*NUM_LEDS)
+    glClearColor(0,0,0,0)
     @async begin
-        show(c)
         while !exited
             recvData = recv(udpSock)
-            if typeof(recvData) == Vector{UInt8}
-                update!(bufferdict, reshape(recvData[1:BYTES_PER_LED*NUM_LEDS], BYTES_PER_LED, LED_PER_ROW, NUM_ROWS))
+            if typeof(recvData) == Vector{UInt8} && length(recvData) == BYTES_PER_LED*NUM_LEDS
+                update!(bufferdict, recvData[1:3*NUM_LEDS], LED_PER_ROW, NUM_ROWS)
             end
         end
     end
-    glClearColor(0,0,0,0)
     while !GLFW.WindowShouldClose(window)
         glClear(GL_COLOR_BUFFER_BIT)
         GLAbstraction.render(ro)
@@ -79,7 +77,9 @@ function main(n, ledprow, numrow, port, setup)
         if GLFW.GetKey(window, GLFW.KEY_ESCAPE) == GLFW.PRESS
             GLFW.SetWindowShouldClose(window, true)
         end
+        yield()
     end
+    exited = true
     GLFW.DestroyWindow(window)
 end
 
@@ -88,14 +88,14 @@ function getVertices(leds_per_row, num_rows)
     slotheight = convert(Float32, 2/num_rows)
     # Adjust the computation for one indexing.  Good ole one-indexing.
     rect_template = [
-        Float32[ 0.0f0,             0.90f0*slotheight],
-        Float32[ 0.90f0*slotwidth,  0.90f0*slotheight],
-        Float32[ 0.90f0*slotwidth,  0.0f0],
+        Float32[ 0.0f0,             0.95f0*slotheight],
+        Float32[ 0.95f0*slotwidth,  0.95f0*slotheight],
+        Float32[ 0.95f0*slotwidth,  0.0f0],
         Float32[ 0.0f0,             0.0f0],
     ]
     get_slot(x,y) = Float32[((x-1)*slotwidth)-1, ((y-1)*slotheight)-1]
 
-    stuff = [rect_template[i].+get_slot(j,k) for i in 1:4, k in 1:num_rows, j in 1:leds_per_row]
+    stuff = [rect_template[i].+get_slot(j,k) for i in 1:4, j in 1:leds_per_row, k in 1:num_rows]
     out = [Point{2,Float32}(stuff[i]...) for i in eachindex(stuff)]
     elems = vcat(reshape([[(i-1,i,i+1), (i+1,i+2,i-1)] for i in 1:4:length(out)], :, 1)...)
     elements = [Face{3, UInt32}(elems[i]...) for i in 1:length(elems)]
@@ -106,12 +106,13 @@ function getVertexColors(numLED)
     return Vec3f0[(0.0f0,0.4f0,1.0f0) for i in 1:4*numLED]
 end
 
-function update!(bufferdict, ledData)
-    for i in 1:size(ledData, 3) # each row
-        for j in 1:size(ledData, 2) # each column in the row
-            idx = (j-1)*4+(i-1)*size(leddata,2)
-            bufferdict[:color][idx:idx+3] = Vec3f0(leddata[:,j,i]/255.0f0...)
-        end
+function update!(bufferdict, ledData, ledperrow, numrow)
+    len::Int = length(ledData)
+    for i in eachindex(bufferdict[:color])
+        tmp::Int = floor(Int, (i-1)/4)
+        row::Int = floor(Int, tmp/ledperrow)+1
+        idx::Int = len + 3*((tmp - (row-1)*ledperrow) - row*ledperrow) + 1
+        bufferdict[:color][i] = Vec{3,Float32}(ledData[idx:idx+2])/255.0f0
     end
 end
 
