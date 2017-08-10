@@ -3,7 +3,12 @@ module LEDSimulator
 export main
 
 using JSON, ModernGL, GLAbstraction, GeometryTypes
-import GLFW 
+import GLFW
+
+import Base: setindex!
+import GLAbstraction: setindex!
+
+include("./JsonSchema.jl")
 
 function main(n, ledprow, numrow, port, setup)
     const name = n
@@ -44,7 +49,7 @@ function main(n, ledprow, numrow, port, setup)
         out vec4 color;
 
         void main()
-        {    
+        {
             color = vec4(Color, 1.0);
         }
     """
@@ -77,7 +82,7 @@ function main(n, ledprow, numrow, port, setup)
         if GLFW.GetKey(window, GLFW.KEY_ESCAPE) == GLFW.PRESS
             GLFW.SetWindowShouldClose(window, true)
         end
-        yield()
+        sleep(1/60)
     end
     exited = true
     GLFW.DestroyWindow(window)
@@ -106,14 +111,25 @@ function getVertexColors(numLED)
     return Vec3f0[(0.0f0,0.4f0,1.0f0) for i in 1:4*numLED]
 end
 
+function csetindex!{T}(b::GLBuffer{T}, value::Vector{T}, loc::Colon)
+    multiplicator = sizeof(T)
+    GLAbstraction.bind(b)
+    glBufferSubData(b.buffertype, 0, length(value)*sizeof(value[1]), value)
+    GLAbstraction.bind(b, 0)
+end
+
+function getLedDataIdx(len, i, ledperrow, numrow)
+    tmp::Int = floor(Int, (i-1)/4)
+    row::Int = floor(Int, tmp/ledperrow) + 1
+    idx::Int = len + 3*((tmp - (row-1)*ledperrow) - row*ledperrow) + 1
+    return idx
+end
+
 function update!(bufferdict, ledData, ledperrow, numrow)
     len::Int = length(ledData)
-    for i in eachindex(bufferdict[:color])
-        tmp::Int = floor(Int, (i-1)/4)
-        row::Int = floor(Int, tmp/ledperrow)+1
-        idx::Int = len + 3*((tmp - (row-1)*ledperrow) - row*ledperrow) + 1
-        bufferdict[:color][i] = Vec{3,Float32}(ledData[idx:idx+2])/255.0f0
-    end
+    gidx = (x) -> getLedDataIdx(len, x, ledperrow, numrow)
+    tmp = Vec3f0[ledData[gidx(i):gidx(i)+2] for i in eachindex(bufferdict[:color])]./255.0f0
+    csetindex!(bufferdict[:color], tmp, :)
 end
 
 function setup_server_connection(name, led_per_row, num_rows, main_udpsock, main_port, setup_port)
@@ -157,39 +173,6 @@ function setup_server_connection(name, led_per_row, num_rows, main_udpsock, main
     end
 end
 
-function validate_json(json_data::Dict{String,Any})
-    ref_dict = Dict(
-        "ip"=>"",
-        "mac"=>"",
-        "msg_type"=>""
-    )
-    return collect(keys(json_data)) == collect(keys(ref_dict))
-end
 
-check_json(x::T, y::T) where {T<:Dict{String, N} where N<:Any} = check_symmetry(x,y)
-check_json(x::T, y::N) where {T,N} = false
-
-function check_symmetry(x::T, y::T) where {T<:Dict{S, N} where {S<:Any, N<:Any}}
-    if collect(keys(x)) == collect(keys(y))
-        return reduce(check_symmetry.(collect(values(x)), collect(values(y)))) do x, y
-            return x && y
-        end
-    else
-        return false
-    end
-end
-
-function check_symmetry(x::AbstractArray, y::AbstractArray)
-    try
-        return reduce(check_symmetry.(x,y)) do x, y
-            return x && y
-        end
-    catch
-        return false
-    end
-end
-
-check_symmetry(x::T, y::T) where T<:Union{Number, String, Bool} = true
-check_symmetry(x::T, y::N) where {T, N} = false
 
 end
