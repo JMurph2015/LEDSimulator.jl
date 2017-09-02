@@ -1,0 +1,1 @@
+Pkg.add.(["GLFW","ModernGL","GLAbstraction","JSON","GeometryTypes"])
